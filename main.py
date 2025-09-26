@@ -60,6 +60,8 @@ def main():
     - Write or overwrite files
 
     All paths you provide should be relative to the working directory. You do not need to specify the working directory in your function calls as it is automatically injected for security reasons.
+
+    Start by listing files in ./calculator, then read relevant files to answer.
     """
     
     config = types.GenerateContentConfig(
@@ -67,22 +69,37 @@ def main():
         system_instruction=system_prompt,
     )
 
-    response = client.models.generate_content(
-        model="gemini-2.0-flash-001",
-        contents=messages,
-        config=config,
-    )
+    for i in range(20):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.0-flash-001",
+                contents=messages,
+                config=config,        
+            )
+           
+            if response.candidates:
+                for candidate in response.candidates:
+                    messages.append(candidate.content)
+            
+            if response.function_calls:
+                for fc in response.function_calls:
+                    result_content = call_function(fc, verbose=verbose)
+                    messages.append(result_content)
+
+                    if verbose:
+                        print(f"-> {result_content.parts[0].function_response.response}")
+            
+            if response.text and not response.function_calls:
+                    print(response.text)
+                    break
+            
+
+        except Exception as e:
+            print(f"Error: {e}")
         
     prompt_tokens = response.usage_metadata.prompt_token_count
     response_tokens = response.usage_metadata.candidates_token_count
-
-    if response.function_calls:
-        for fc in response.function_calls:
-            result_content = call_function(fc, verbose=verbose)
-            if verbose:
-                print(f"-> {result_content.parts[0].function_response.response}")
-    else:
-        print(response.text)
+    
 
     if verbose:
         print(f"User prompt: {prompt}")
@@ -92,13 +109,18 @@ def main():
 def call_function(function_call_part, verbose=False):
     function_name = function_call_part.name
     function_args = dict(function_call_part.args or {})
-
-    if verbose:
-        print(f"Calling function: {function_name}({function_args})")
-    else:
-        print(f" - Calling function: {function_name}")
-    
     function_args["working_directory"] = "./calculator"
+
+    if function_name == "get_files_info":
+        function_args.pop("directory", None)
+    elif function_name in ("get_file_content", "run_python_file", "write_file"):
+        if "path" in function_args and isinstance(function_args["path"], str):
+            function_args["path"] = os.path.basename(function_args["path"])
+
+    print(f" - Calling function: {function_name}")
+    if verbose:
+        print(f"Calling function: {function_name}({function_args})")   
+    
     functions = {
         "get_files_info": get_files_info,
         "get_file_content": get_file_content,
@@ -115,13 +137,16 @@ def call_function(function_call_part, verbose=False):
                 response={"error": f"Unknown function: {function_name}"},
             )],
         )
+    
     function_result = func(**function_args)
-
+    payload = {"result": function_result}
+    if function_name == "get_files_info" and isinstance(function_result, list):
+        payload = {"files": function_result}
     return types.Content(
-        role="tool",
+        role="user",
         parts=[types.Part.from_function_response(
             name=function_name,
-            response={"result": function_result},
+            response=payload,
         )],
     )
 
